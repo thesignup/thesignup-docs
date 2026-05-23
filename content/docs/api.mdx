@@ -1,0 +1,31 @@
+---
+title: API reference
+description: REST API for thesignup. Agent-friendly, idempotent, RFC 7807 errors.
+---
+
+The thesignup REST API is OpenAPI 3.1, Bearer-authenticated via long-lived
+API keys, rate-limited per credential, and idempotency-keyed for safe retries.
+Errors follow [RFC 7807 problem details](https://datatracker.ietf.org/doc/html/rfc7807)
+with stable machine-readable `code` enums.
+
+## Get started
+
+<Cards>
+  <Card title="API keys" href="/docs/auth/api-keys" />
+  <Card title="OAuth" href="/docs/auth/oauth" />
+  <Card title="TypeScript SDK" href="/docs/sdks/typescript" />
+</Cards>
+
+## Conventions
+
+- **Base URL** — `https://thesignup.app/api/v1`
+- **Auth** — `Authorization: Bearer sgn_<env>_<prefix>_<secret>`
+- **Errors** — `application/problem+json`, switch on the `code` field
+- **Idempotency** — pass an `Idempotency-Key` header on mutating requests; the same key + body within 24h replays the original response
+- **Rate limits** — surfaced via `X-RateLimit-Limit`, `-Remaining`, `-Reset` headers
+
+> TODO: Expand with quickstart, auth examples, error handling guide.
+
+## Endpoints
+
+Browse the full operation list in the sidebar.
