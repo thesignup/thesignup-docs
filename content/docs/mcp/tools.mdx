@@ -1,8 +1,42 @@
 ---
 title: MCP tools
-description: Reference for every tool exposed by thesignup's MCP server.
+description: The 13 tools exposed by the thesignup MCP server.
 ---
 
-Tools mirror the REST API one-to-one. Each tool accepts the same parameters as the corresponding endpoint and returns the same response shape.
+Each tool maps to a service-layer method that's also reachable via the [REST API](/docs/api). The inputs are generated from the same Zod schemas as the REST request bodies, so behavior is identical.
 
-> TODO: Auto-generate this page from the MCP server's tool manifest (or its OpenAPI projection).
+| Tool | Scope | Maps to |
+|---|---|---|
+| `whoami` | — | (MCP-only: identity check) |
+| `list_signups` | `signups:read` | `GET /signups` |
+| `get_signup` | `signups:read` | `GET /signups/{id}` |
+| `get_signup_analytics` | `analytics:read` | `GET /signups/{id}/analytics` |
+| `create_signup` | `signups:write` | `POST /signups` |
+| `add_slots` | `signups:write` | (MCP-only: bulk slot creation) |
+| `publish_signup` | `signups:write` | `POST /signups/{id}/publish` |
+| `list_participants` | `participants:read` | `GET /signups/{id}/participants` |
+| `register_participant` | `participants:write` | `POST /signups/{id}/participants` |
+| `remove_participant` | `participants:write` | `DELETE /signups/{id}/participants/{pid}` |
+| `register_self` | `register:write` OR `participants:write` | (MCP-only: caller signs themselves up) |
+| `draft_signup_ai` | `ai:draft` | `POST /signups/from-description` |
+| `send_reminder` | `reminders:send` | `POST /signups/{id}/reminders/send` |
+
+## Error semantics
+
+Tool handlers throw `ToolError` for user-facing failures (not found, already closed, etc.). The MCP server translates those into `isError: true` result frames with a human-readable message — clients should surface that to the user.
+
+Unexpected errors (bugs, upstream outages) surface as MCP protocol errors; the client typically retries or escalates.
+
+`ScopeError` is thrown when a token is missing a required scope. Compliant clients react by re-requesting authorization with the additional scope.
+
+## Why MCP-only tools exist
+
+Three tools (`whoami`, `add_slots`, `register_self`) have no direct REST counterpart. They exist where the agent's natural shape differs from the REST resource model:
+
+- `whoami` collapses what would be two REST reads (`/me` + `/orgs/{id}`) into one tool, since agents always want both together.
+- `add_slots` accepts a bulk array of slots; the REST surface doesn't expose a bulk slot create yet.
+- `register_self` reads the caller's name + email from their user account instead of accepting them as input — a more ergonomic shape for "sign me up for X."
+
+## Tool surface evolution
+
+A CI drift check refuses to merge a new REST endpoint without an explicit MCP decision — either an opt-in (tool) or a written reason for opt-out. This keeps the two surfaces from drifting silently.

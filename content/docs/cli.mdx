@@ -3,13 +3,50 @@ title: CLI
 description: Manage thesignup from the terminal.
 ---
 
-The `signup` CLI wraps the REST API for scripting and local workflows.
+> **Status:** Not yet released.
 
-> TODO: Document install, auth, and the most common commands once the CLI ships.
+The `thesignup` CLI will wrap the [TypeScript SDK](/docs/sdks/typescript) using [oclif](https://oclif.io/) — the same framework Heroku, Salesforce, and Stripe use.
+
+## What's planned
 
 ```sh
-# Placeholder
-brew install thesignup/tap/signup
-signup auth login
-signup orgs list
+# Install (planned)
+brew install thesignup/tap/thesignup
+# or: npm i -g @thesignup/cli
+
+# Auth via device-code OAuth — no API key required
+thesignup auth login
+
+# Inspect
+thesignup signups list
+thesignup signups get sg_abc123
+thesignup participants list sg_abc123
+
+# Create + publish
+thesignup signups create --title "Spring potluck" --date 2026-04-12T17:00Z
+thesignup signups publish sg_abc123
+
+# AI-draft from a description
+thesignup signups draft "Saturday potluck for soccer team, 20 people, salads and drinks"
+
+# Send reminders
+thesignup reminders send sg_abc123
+```
+
+### Why oclif
+
+Plugin system (agent-native extensibility), `oclif upgrade` for auto-updates, shell completions, Homebrew tap support — all the table-stakes ergonomics for a polished CLI without hand-rolling them.
+
+### Auth model
+
+Device-code OAuth (RFC 8628) — the CLI prints a code, you confirm in the browser, the CLI receives a refresh token. No long-lived API keys living in your shell history. The mechanism is already shipped server-side.
+
+## What to use today
+
+`curl` against the [REST API](/docs/api), or `gh`/`jq`/your shell scripting tool of choice. Once you have an API key, every CLI workflow above is reachable as a one-line HTTP call.
+
+```sh
+SIGNUP_API_KEY=sgn_live_…
+curl -sS -H "Authorization: Bearer $SIGNUP_API_KEY" \
+  https://thesignup.app/api/v1/signups | jq '.data[].title'
 ```

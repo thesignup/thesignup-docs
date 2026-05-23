@@ -1,8 +1,76 @@
 ---
 title: MCP quickstart
-description: Connect AI agents to thesignup via the hosted MCP server.
+description: Connect Claude, Cursor, and other MCP clients to thesignup.
 ---
 
-The hosted MCP server lives at `https://mcp.thesignup.com/mcp`. Authenticate with the same long-lived API keys used for the REST API.
+The hosted MCP server lives at:
 
-> TODO: Add Claude Code / Cursor / Windsurf config snippets, tool catalog, auth examples.
+```
+https://thesignup.app/mcp/mcp
+```
+
+It speaks the [Streamable HTTP transport](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports) and authenticates via OAuth 2.1 + PKCE. The 13 tools mirror the REST API; the [tool reference](/docs/mcp/tools) lists each one.
+
+## Clients
+
+### Claude Desktop / Claude Code
+
+Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or the equivalent on your OS:
+
+```json
+{
+  "mcpServers": {
+    "thesignup": {
+      "url": "https://thesignup.app/mcp/mcp"
+    }
+  }
+}
+```
+
+Restart Claude. On first tool invocation, Claude opens an OAuth consent screen — pick the org you want the agent to act on behalf of, approve the requested scopes, and you're connected.
+
+### Cursor
+
+Cursor settings → MCP → add a server:
+
+```json
+{
+  "mcpServers": {
+    "thesignup": {
+      "url": "https://thesignup.app/mcp/mcp"
+    }
+  }
+}
+```
+
+### Anything else
+
+Any MCP client that supports OAuth-authenticated Streamable HTTP servers will work. The server publishes its discovery metadata at:
+
+- `https://thesignup.app/.well-known/oauth-protected-resource-mcp` — RFC 9728 resource metadata
+- `https://thesignup.app/.well-known/oauth-authorization-server` — RFC 8414 authorization server metadata
+
+## Scopes
+
+When the consent screen appears, the agent requests one or more of:
+
+| Scope | Tools that need it |
+|---|---|
+| `signups:read` | `list_signups`, `get_signup` |
+| `signups:write` | `create_signup`, `add_slots`, `publish_signup` |
+| `participants:read` | `list_participants` |
+| `participants:write` | `register_participant`, `remove_participant` |
+| `register:write` | `register_self` (lighter alternative to `participants:write`) |
+| `analytics:read` | `get_signup_analytics` |
+| `ai:draft` | `draft_signup_ai` |
+| `reminders:send` | `send_reminder` |
+
+A token granted `signups:read` cannot mutate; granting `participants:write` does not also grant `signups:write`. Match the scope to the use case.
+
+## Identity
+
+Every session starts with the `whoami` tool — no scope required. It returns the organization the token was issued for, the granted scopes, and the calling client id. Agents should call it first to confirm context before doing real work.
+
+## Audience binding (RFC 8707)
+
+Tokens are audience-bound. A token issued for `/api/v1` won't be accepted at `/mcp/mcp` and vice versa — the server rejects mismatched audiences before any tool runs. This prevents a leaked REST key from being replayed at the MCP surface.

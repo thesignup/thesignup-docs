@@ -3,10 +3,9 @@ title: API reference
 description: REST API for thesignup. Agent-friendly, idempotent, RFC 7807 errors.
 ---
 
-The thesignup REST API is OpenAPI 3.1, Bearer-authenticated via long-lived
-API keys, rate-limited per credential, and idempotency-keyed for safe retries.
-Errors follow [RFC 7807 problem details](https://datatracker.ietf.org/doc/html/rfc7807)
-with stable machine-readable `code` enums.
+The thesignup REST API is OpenAPI 3.1, Bearer-authenticated via long-lived API keys, rate-limited per credential, and idempotency-keyed for safe retries. Errors follow [RFC 7807 problem details](https://datatracker.ietf.org/doc/html/rfc7807) with stable machine-readable `code` enums.
+
+The full operation list is in the sidebar.
 
 ## Get started
 
@@ -16,16 +15,78 @@ with stable machine-readable `code` enums.
   <Card title="TypeScript SDK" href="/docs/sdks/typescript" />
 </Cards>
 
-## Conventions
+## Base URL
 
-- **Base URL** — `https://thesignup.app/api/v1`
-- **Auth** — `Authorization: Bearer sgn_<env>_<prefix>_<secret>`
-- **Errors** — `application/problem+json`, switch on the `code` field
-- **Idempotency** — pass an `Idempotency-Key` header on mutating requests; the same key + body within 24h replays the original response
-- **Rate limits** — surfaced via `X-RateLimit-Limit`, `-Remaining`, `-Reset` headers
+```
+https://thesignup.app/api/v1
+```
 
-> TODO: Expand with quickstart, auth examples, error handling guide.
+The version is in the URL prefix, not in path segments — `GET /api/v1/signups`, not `/api/v1/v1/signups`.
 
-## Endpoints
+## Authentication
 
-Browse the full operation list in the sidebar.
+Every request needs a Bearer token. Use a long-lived API key for first-party scripts; use OAuth for third-party apps acting on behalf of a user.
+
+```http
+Authorization: Bearer sgn_live_abcd_xxxxxxxxxxxxxxxx
+```
+
+See [API keys](/docs/auth/api-keys) and [OAuth](/docs/auth/oauth) for setup.
+
+## Idempotency
+
+Send `Idempotency-Key: <opaque-string>` on `POST` / `PATCH` requests. Same key + same body within 24h replays the original response (including the original status code and headers). Same key + different body returns `422` with `code: idempotency_key_reuse`.
+
+```http
+POST /api/v1/signups
+Authorization: Bearer sgn_live_…
+Idempotency-Key: 9d8a1f64-3c2a-4f6b-9c89-7c5d1a2b8e90
+Content-Type: application/json
+
+{ "title": "Spring potluck", "eventDate": "2026-04-12T17:00:00Z" }
+```
+
+UUID v4 per logical operation is the recommended shape.
+
+## Rate limits
+
+Every response carries:
+
+| Header | Meaning |
+|---|---|
+| `X-RateLimit-Limit` | Per-minute budget for this credential's tier |
+| `X-RateLimit-Remaining` | Requests left in the current window |
+| `X-RateLimit-Reset` | Unix timestamp (seconds) when the window resets |
+
+On `429`, a `Retry-After` header is included.
+
+A separate per-org daily ceiling caps `POST /signups` at 50 per day across all credentials. Hitting it returns `429` with `code: daily_ceiling_exceeded`.
+
+## Errors
+
+All errors are `application/problem+json`:
+
+```json
+{
+  "type": "https://thesignup.app/problems/not-found",
+  "title": "Not found",
+  "status": 404,
+  "code": "not_found",
+  "detail": "Signup sg_123 doesn't exist."
+}
+```
+
+Switch on `code`, not `title` or `detail` — those are for humans and may change. The full code enum is documented on the [ProblemDetails schema](/docs/api/schemas/ProblemDetails).
+
+### Common codes
+
+| Code | When |
+|---|---|
+| `missing_credentials` / `malformed_credentials` / `invalid_credentials` / `revoked_credentials` | 401 — fix the `Authorization` header |
+| `scope_required` / `forbidden` | 403 — token is valid but lacks the required scope |
+| `not_found` | 404 — resource doesn't exist or isn't owned by your org |
+| `validation_failed` | 422 — body, query, or path failed Zod validation. Errors itemized in `errors[]` |
+| `idempotency_key_reuse` / `idempotency_in_progress` | 422 / 409 — see Idempotency above |
+| `rate_limited` / `daily_ceiling_exceeded` | 429 — back off per `Retry-After` |
+| `upgrade_required` | 402 — feature gated to a higher billing tier |
+| `upstream_unavailable` | 502 — a third-party (e.g. AI provider) failed |

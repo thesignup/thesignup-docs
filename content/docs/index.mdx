@@ -3,12 +3,12 @@ title: Introduction
 description: REST API, MCP server, SDKs, and CLI references for thesignup.
 ---
 
-Welcome to the developer documentation for **thesignup**.
+thesignup is an event signup tool — potluck slots, volunteer rotations, headcount-only RSVPs, carpool seats. The product is **agent-native**: every capability that the dashboard exposes also ships as a REST endpoint, an MCP tool, and (soon) an SDK/CLI on top.
 
-## What's here
+## Pick a surface
 
 <Cards>
-  <Card title="API reference" href="/docs/api" />
+  <Card title="REST API" href="/docs/api" />
   <Card title="MCP quickstart" href="/docs/mcp/quickstart" />
   <Card title="TypeScript SDK" href="/docs/sdks/typescript" />
   <Card title="CLI" href="/docs/cli" />
@@ -16,4 +16,21 @@ Welcome to the developer documentation for **thesignup**.
   <Card title="OAuth" href="/docs/auth/oauth" />
 </Cards>
 
-> TODO: Write a real overview — what thesignup is, the agent-friendly API design, idempotency / RFC 7807, etc.
+## What's stable today
+
+- **REST API** — `https://thesignup.app/api/v1`. OpenAPI 3.1 (the [reference](/docs/api) is generated from this spec). Bearer auth via long-lived API keys, per-credential rate limits, idempotency keys, RFC 7807 errors.
+- **MCP server** — `https://thesignup.app/mcp/mcp`. 13 tools covering signup CRUD, participant management, analytics, reminders, and AI-drafting. OAuth 2.1 + PKCE for third-party agents.
+
+## What's planned
+
+- **TypeScript SDK** (`@thesignup/sdk`) — typed client generated from the same OpenAPI spec, with Zod runtime validation.
+- **CLI** (`thesignup`) — Heroku/Stripe-style binary on top of the TS SDK.
+- **Python SDK** — when there's enough demand. Most agent users hit the MCP server or REST directly today.
+
+## Design principles
+
+Every endpoint is described in the OpenAPI spec, including request shapes, response shapes, and error codes. The spec is the source of truth; the MCP tools, SDKs, and this documentation are downstream consumers. If a behavior isn't in the spec, it doesn't exist.
+
+Errors follow [RFC 7807 problem details](https://datatracker.ietf.org/doc/html/rfc7807) with a stable machine-readable `code` field — agents and clients switch on `code`, not on parsed error messages.
+
+Mutating requests accept an `Idempotency-Key` header. Same key + same body within 24h replays the original response; same key + different body returns `422 validation_failed` with `code: idempotency_key_reuse`. Use a UUID per logical operation.

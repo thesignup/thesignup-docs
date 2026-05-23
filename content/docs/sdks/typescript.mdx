@@ -1,15 +1,57 @@
 ---
 title: TypeScript SDK
-description: Typed client for thesignup's REST API.
+description: Typed client for the thesignup REST API.
 ---
 
-The official TypeScript SDK ships as `@thesignup/sdk` on npm.
+> **Status:** Not yet released. The SDK is in active development.
 
-> TODO: Link to the GitHub repo once the SDK ships. Add install + first-call examples.
+## What's planned
+
+A typed TypeScript client generated from the same OpenAPI 3.1 spec that powers this reference, via [`@hey-api/openapi-ts`](https://github.com/hey-api/openapi-ts). One source of truth (the Zod schemas in the main app), one generator, no hand-written drift.
 
 ```ts
-// Placeholder — SDK not yet published.
+// Once published — not the current state.
 import { TheSignup } from '@thesignup/sdk';
 
 const client = new TheSignup({ apiKey: process.env.SIGNUP_API_KEY });
+
+const { data, error } = await client.signups.list({ limit: 20 });
+if (error) {
+  // RFC 7807 problem details, typed via the OpenAPI spec
+  console.error(error.code, error.detail);
+  return;
+}
+
+console.log(data.data.length, 'signups');
+```
+
+### What it will include
+
+- Typed request/response shapes for every `/api/v1/*` endpoint.
+- Zod runtime validation on responses (catch upstream drift early).
+- Idempotency-Key helpers — pass a UUID per logical operation, the SDK handles the header.
+- Automatic retry on `429` honoring `Retry-After`.
+- RFC 7807 error parsing into a `TheSignupError` class with the `code` field strongly typed.
+- Optional TanStack Query hooks for React.
+
+### Out of scope
+
+- Server-side streaming. Use the MCP server for agent flows.
+- Webhook signature verification — handled by a small companion package once webhooks are public.
+
+## What to use today
+
+Plain `fetch` against the [REST API](/docs/api). The OpenAPI spec is downloadable at `https://thesignup.app/api/v1/openapi` if you want to generate your own client in the meantime.
+
+```ts
+const res = await fetch('https://thesignup.app/api/v1/signups', {
+  headers: { Authorization: `Bearer ${process.env.SIGNUP_API_KEY}` },
+});
+
+if (!res.ok) {
+  const problem = await res.json();
+  throw new Error(`${problem.code}: ${problem.detail ?? problem.title}`);
+}
+
+const { data, nextCursor } = await res.json();
 ```

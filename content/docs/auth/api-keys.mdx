@@ -3,10 +3,56 @@ title: API keys
 description: Long-lived org-scoped credentials for first-party and agent access.
 ---
 
-API keys are long-lived bearer tokens scoped to an organization. Format: `sgn_<env>_<prefix>_<secret>`.
+API keys are long-lived bearer tokens, one per organization. Use them for first-party scripts, server-to-server integrations, and any agent acting as the org itself. For agents acting on behalf of an end user, prefer [OAuth](/docs/auth/oauth).
 
-```http
-Authorization: Bearer sgn_live_…
+## Format
+
+```
+sgn_<env>_<prefix>_<secret>
 ```
 
-> TODO: Document key rotation, scopes, prefix conventions, restricted keys.
+| Segment | Meaning |
+|---|---|
+| `sgn` | Fixed namespace prefix. Easy to grep for in logs and source. |
+| `<env>` | `live` for production, `test` for sandbox. |
+| `<prefix>` | First 4 chars of the secret, shown in dashboards so you can tell keys apart without revealing them. |
+| `<secret>` | Random opaque value. Treat as a password. |
+
+Example: `sgn_live_a2f9_8e7d4c1b6a59f8e3d7c2b1a09f8e7d6c5`
+
+## Generate one
+
+Account → Settings → API keys → New key. You'll see the key value exactly once. Save it in a secret store (Vercel env vars, 1Password, AWS Secrets Manager) — there's no way to recover it later.
+
+## Use it
+
+```http
+GET /api/v1/me HTTP/1.1
+Host: thesignup.app
+Authorization: Bearer sgn_live_a2f9_…
+```
+
+```ts
+await fetch('https://thesignup.app/api/v1/signups', {
+  headers: { Authorization: `Bearer ${process.env.SIGNUP_API_KEY}` },
+});
+```
+
+## Rotation
+
+When a key is compromised — or on a routine rotation cadence — generate a new one, deploy it everywhere, then revoke the old one in the dashboard. Revocation takes effect immediately; in-flight requests authorized with the old key continue, but no new requests will be accepted.
+
+## Scope and access
+
+API keys carry the full set of agent-facing scopes (`signups:*`, `participants:*`, `analytics:read`, `ai:draft`, `reminders:send`). They're suitable for trusted first-party use. For third-party tools acting on behalf of one of your users, see [OAuth](/docs/auth/oauth) — that flow lets the user grant only the specific scopes the tool needs.
+
+## Security
+
+- **Never** commit keys to source control. The `sgn_` prefix is grep-friendly so secret scanners flag accidentally-committed keys.
+- Server-side only. A `sgn_live_…` value reaching a browser is a leak.
+- Per-environment. Use `sgn_live_…` against production and `sgn_test_…` against the sandbox; never the reverse.
+- One per integration. Easier to revoke a single integration's access without breaking the others.
+
+## Webhook signatures
+
+Webhook deliveries carry an HMAC signature over the request body, signed with a per-endpoint secret (separate from your API key). Verify it before trusting the payload. The webhook management API is documented in the [REST reference](/docs/api).

@@ -1,8 +1,120 @@
 ---
 title: OAuth
-description: Three-legged OAuth for third-party apps acting on behalf of users.
+description: Three-legged OAuth 2.1 + PKCE for third-party apps acting on behalf of users.
 ---
 
-OAuth 2.1 with PKCE for third-party apps that need delegated access to a user's data.
+OAuth lets a third-party app — including an MCP-speaking AI agent — act on behalf of a thesignup user, with the user's explicit consent and only the scopes they approve.
 
-> TODO: Document app registration, scopes, the authorization flow, refresh tokens.
+## When to use OAuth vs API keys
+
+| Use OAuth when… | Use [API keys](/docs/auth/api-keys) when… |
+|---|---|
+| A third-party tool needs access to your users' data | Your own server-to-server scripts |
+| You want scoped, revocable, per-user access | Trusted internal automation |
+| The user should see a consent screen | The user has direct admin access |
+
+## Discovery
+
+Standard discovery endpoints are published — no per-integration setup beyond reading them:
+
+| Endpoint | What it returns |
+|---|---|
+| `/.well-known/oauth-authorization-server` | RFC 8414 metadata: authorize URL, token URL, supported scopes, supported flows |
+| `/.well-known/oauth-protected-resource-mcp` | RFC 9728 metadata for the MCP server |
+
+## Register an app
+
+Dynamic Client Registration (RFC 7591) is supported, so your app can self-register at runtime:
+
+```http
+POST /oauth/register
+Content-Type: application/json
+
+{
+  "client_name": "My agent",
+  "redirect_uris": ["https://my-agent.example/oauth/callback"],
+  "grant_types": ["authorization_code", "refresh_token"],
+  "token_endpoint_auth_method": "none",
+  "scope": "signups:read signups:write"
+}
+```
+
+You'll get back a `client_id` and (for confidential clients) `client_secret`. Public clients use PKCE and skip the secret.
+
+## Authorization code flow with PKCE
+
+1. **Build a code verifier + challenge.** Random 43–128-char string, SHA-256 it, base64url-encode the digest.
+2. **Redirect the user to the authorize URL:**
+
+   ```
+   https://thesignup.app/oauth/authorize
+     ?response_type=code
+     &client_id=…
+     &redirect_uri=https://my-agent.example/oauth/callback
+     &scope=signups:read+participants:read
+     &code_challenge=<sha256-base64url>
+     &code_challenge_method=S256
+     &state=<random-csrf-token>
+     &resource=https://thesignup.app/api/v1
+   ```
+
+   The user sees a consent screen showing your `client_name`, the requested scopes, and the org they're acting as.
+
+3. **Exchange the code for tokens** at the token endpoint:
+
+   ```http
+   POST /oauth/token
+   Content-Type: application/x-www-form-urlencoded
+
+   grant_type=authorization_code
+   &code=<from callback>
+   &client_id=…
+   &redirect_uri=https://my-agent.example/oauth/callback
+   &code_verifier=<the original random string>
+   ```
+
+   Response:
+
+   ```json
+   {
+     "access_token": "oat_…",
+     "refresh_token": "ort_…",
+     "token_type": "Bearer",
+     "expires_in": 3600,
+     "scope": "signups:read participants:read"
+   }
+   ```
+
+4. **Use the access token** as a Bearer credential on REST or MCP requests.
+
+5. **Refresh** before expiry:
+
+   ```http
+   POST /oauth/token
+   Content-Type: application/x-www-form-urlencoded
+
+   grant_type=refresh_token
+   &refresh_token=ort_…
+   &client_id=…
+   ```
+
+   Refresh tokens rotate on each use — store the new value and discard the old.
+
+## Audience binding (RFC 8707)
+
+The `resource` parameter on the authorize request binds the access token to one surface:
+
+| Surface | `resource` value |
+|---|---|
+| REST API | `https://thesignup.app/api/v1` |
+| MCP server | `https://thesignup.app/mcp/mcp` |
+
+A token issued for the REST API won't be accepted at the MCP surface, and vice versa. This blocks a leaked credential from being replayed against a different surface.
+
+## Scopes
+
+Same catalog as the [MCP quickstart](/docs/mcp/quickstart#scopes). Request the narrowest set that gets the job done — agents and users are both more comfortable approving `participants:read` than a blanket `participants:write`.
+
+## Device code flow (RFC 8628)
+
+For CLI and headless agents that can't open a browser, the device code flow is supported. The [CLI](/docs/cli) will use this once it ships.
