@@ -1,0 +1,12 @@
+---
+title: API keys
+description: Long-lived org-scoped credentials for first-party and agent access.
+---
+
+API keys are long-lived bearer tokens scoped to an organization. Format: `sgn_<env>_<prefix>_<secret>`.
+
+```http
+Authorization: Bearer sgn_live_…
+```
+
+> TODO: Document key rotation, scopes, prefix conventions, restricted keys.

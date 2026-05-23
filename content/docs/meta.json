@@ -1,0 +1,15 @@
+{
+  "title": "Documentation",
+  "pages": [
+    "index",
+    "---API---",
+    "api",
+    "---Integrations---",
+    "mcp",
+    "sdks/typescript",
+    "cli",
+    "---Auth---",
+    "auth"
+  ],
+  "defaultOpen": true
+}
