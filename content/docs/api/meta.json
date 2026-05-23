@@ -1,0 +1,10 @@
+{
+  "title": "API",
+  "pages": [
+    "quickstart",
+    "errors",
+    "---Reference---",
+    "..."
+  ],
+  "defaultOpen": true
+}

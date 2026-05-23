@@ -1,0 +1,226 @@
+---
+title: API quickstart
+description: End-to-end curl walkthrough — create a signup, add slots, publish, manage participants.
+---
+
+A complete signup flow against the REST API in curl. Every command works as written; paste them into your shell after exporting an API key.
+
+## 0. Set up auth
+
+[Generate an API key](/docs/auth/api-keys) and export it. Use `sgn_test_…` against the sandbox while you're learning; switch to `sgn_live_…` for production.
+
+```sh
+export SIGNUP_API_KEY=sgn_test_a2f9_8e7d4c1b6a59f8e3d7c2b1a09f8e7d6c5
+export BASE=https://thesignup.app/api/v1
+```
+
+Confirm the key works:
+
+```sh
+curl -sS -H "Authorization: Bearer $SIGNUP_API_KEY" "$BASE/me" | jq
+```
+
+```json
+{
+  "id": "usr_01J7K4P9N6QR8E2T5M3VHN8WK1",
+  "email": "you@example.com",
+  "organization": {
+    "id": "org_01J7K4P9N6QR8E2T5M3VHN8WK1",
+    "name": "Acme Soccer",
+    "slug": "acme-soccer",
+    "tier": "pro"
+  }
+}
+```
+
+## 1. List existing signups
+
+```sh
+curl -sS -H "Authorization: Bearer $SIGNUP_API_KEY" \
+  "$BASE/signups?limit=5" | jq
+```
+
+```json
+{
+  "data": [
+    {
+      "id": "sg_01J7K5RXM2YD0FQ9X3GHCK4N8M",
+      "slug": "fall-fundraiser-a1b2",
+      "title": "Fall fundraiser",
+      "status": "published",
+      "eventDate": "2026-09-15T17:00:00Z",
+      ...
+    }
+  ],
+  "nextCursor": "eyJpZCI6InNnXzAxSjdLNVJYTTJZRDBGUTlYM0dIQ0s0TjhNIn0="
+}
+```
+
+Pass `nextCursor` back as `?cursor=…` to advance pages.
+
+## 2. Create a draft signup
+
+Mutations accept an `Idempotency-Key` header — use a UUID per logical operation so retries are safe.
+
+```sh
+curl -sS -X POST "$BASE/signups" \
+  -H "Authorization: Bearer $SIGNUP_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Spring potluck",
+    "description": "Sides and desserts for 25.",
+    "eventDate": "2026-04-12T17:00:00Z",
+    "location": "Roosevelt Park, picnic shelter 3",
+    "maxParticipants": 25,
+    "requiresPhone": false
+  }' | jq
+```
+
+```json
+{
+  "id": "sg_01J7K6N8DQHX5T2B1ME7VK9W3R",
+  "slug": "spring-potluck-c4d8",
+  "title": "Spring potluck",
+  "status": "draft",
+  "eventDate": "2026-04-12T17:00:00Z",
+  ...
+}
+```
+
+Save the id:
+
+```sh
+export SIGNUP_ID=sg_01J7K6N8DQHX5T2B1ME7VK9W3R
+```
+
+## 3. Publish
+
+The signup is in `draft` state — invisible to participants until you publish:
+
+```sh
+curl -sS -X POST "$BASE/signups/$SIGNUP_ID/publish" \
+  -H "Authorization: Bearer $SIGNUP_API_KEY" | jq '.status'
+```
+
+```json
+"published"
+```
+
+`publish` is idempotent — calling it on an already-published signup is a no-op. It rejects with `409 conflict` if the signup has been closed.
+
+## 4. List participants
+
+```sh
+curl -sS "$BASE/signups/$SIGNUP_ID/participants" \
+  -H "Authorization: Bearer $SIGNUP_API_KEY" | jq '.data | length'
+```
+
+```
+0
+```
+
+## 5. Register a participant
+
+The `POST /signups/{id}/participants` endpoint is anonymous-friendly — no `Authorization` header required (it backs the public link-share flow). Authenticated calls work the same way.
+
+```sh
+curl -sS -X POST "$BASE/signups/$SIGNUP_ID/participants" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Sam Rivers",
+    "email": "sam@example.com",
+    "phone": "+15555550123",
+    "selections": []
+  }' | jq
+```
+
+```json
+{
+  "success": true,
+  "confirmationToken": "cnf_01J7K7P8DQHX5T2B1ME7VK9W3R",
+  "confirmed": [],
+  "failed": []
+}
+```
+
+The `confirmationToken` is what the participant uses later to edit or cancel their registration without re-authenticating. Surface it to them; agents acting on someone's behalf should preserve it.
+
+## 6. Generate a signup from a description (AI)
+
+If you have the `ai:draft` scope, you can hand the AI a free-text description and get back a structured draft:
+
+```sh
+curl -sS -X POST "$BASE/signups/from-description" \
+  -H "Authorization: Bearer $SIGNUP_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "description": "Saturday potluck for the U10 soccer team, around 20 people. Need salads, drinks, and 2 desserts."
+  }' | jq '.draft.title, .draft.items[].name'
+```
+
+```
+"U10 soccer team potluck"
+"Salad"
+"Salad"
+"Drinks"
+"Drinks"
+"Dessert"
+"Dessert"
+```
+
+This consumes one draft from the org's monthly quota on success. Returns the draft only — call `POST /signups` + slot/item endpoints to actually create it.
+
+## 7. Send reminders
+
+For published signups, manually fire an SMS reminder pass:
+
+```sh
+curl -sS -X POST "$BASE/signups/$SIGNUP_ID/reminders/send" \
+  -H "Authorization: Bearer $SIGNUP_API_KEY" | jq
+```
+
+```json
+{ "eligible": 12, "sent": 12, "failed": 0 }
+```
+
+Skips participants who've already been reminded for this signup. Subject to the org's per-day SMS ceiling.
+
+## Errors you'll hit
+
+All errors are [`application/problem+json`](/docs/api#errors) — switch on the `code` field, not on `title` or `detail`.
+
+```sh
+# Missing key
+$ curl -sS "$BASE/me" | jq
+{
+  "type": "https://thesignup.app/problems/missing-credentials",
+  "title": "Authentication required",
+  "status": 401,
+  "code": "missing_credentials"
+}
+
+# Invalid body
+$ curl -sS -X POST "$BASE/signups" \
+    -H "Authorization: Bearer $SIGNUP_API_KEY" \
+    -H "Content-Type: application/json" \
+    -d '{ "title": "" }' | jq
+{
+  "type": "https://thesignup.app/problems/validation-failed",
+  "title": "Validation failed",
+  "status": 422,
+  "code": "validation_failed",
+  "errors": [
+    { "path": "title", "message": "String must contain at least 1 character(s)" },
+    { "path": "eventDate", "message": "Required" }
+  ]
+}
+```
+
+Field-level errors land in `errors[]` on `validation_failed`.
+
+## Next steps
+
+- [Error reference](/docs/api/errors) — every `code` value with an example shape
+- [OAuth](/docs/auth/oauth) — for third-party tools acting on behalf of your users
+- [MCP](/docs/mcp/quickstart) — connect Claude, Cursor, or any MCP client to thesignup

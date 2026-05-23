@@ -13,6 +13,36 @@ OAuth lets a third-party app — including an MCP-speaking AI agent — act on b
 | You want scoped, revocable, per-user access | Trusted internal automation |
 | The user should see a consent screen | The user has direct admin access |
 
+## The flow at a glance
+
+```
+  Agent           Browser           User           thesignup
+    │                │               │                │
+    │  open auth URL │               │                │
+    ├───────────────►│               │                │
+    │                │  GET /oauth/authorize?…        │
+    │                ├──────────────────────────────► │
+    │                │ ◄─────── 200 (consent page) ───┤
+    │                │  shows: "My agent wants        │
+    │                │  signups:read, participants:read"
+    │                │  with [Approve] [Deny]         │
+    │                │               │                │
+    │                │  user clicks Approve           │
+    │                │               ├──────────────► │
+    │                │ ◄── 302 to redirect_uri?code=… │
+    │                │               │                │
+    │ ◄────── browser hits agent's callback URL ──────┤
+    │                                                 │
+    │  POST /oauth/token (code + code_verifier)       │
+    ├────────────────────────────────────────────────►│
+    │ ◄──────────────── 200 { access_token, … } ──────┤
+    │                                                 │
+    │  use access_token as Bearer ► REST or MCP       │
+    └────────────────────────────────────────────────►
+```
+
+The whole dance exists so the **user**, not the agent, decides which scopes and which org the token is good for.
+
 ## Discovery
 
 Standard discovery endpoints are published — no per-integration setup beyond reading them:
@@ -22,83 +52,159 @@ Standard discovery endpoints are published — no per-integration setup beyond r
 | `/.well-known/oauth-authorization-server` | RFC 8414 metadata: authorize URL, token URL, supported scopes, supported flows |
 | `/.well-known/oauth-protected-resource-mcp` | RFC 9728 metadata for the MCP server |
 
+A typical client fetches `/.well-known/oauth-authorization-server` once at startup and caches the URLs.
+
+```sh
+curl -sS https://thesignup.app/.well-known/oauth-authorization-server | jq
+```
+
+```json
+{
+  "issuer": "https://thesignup.app",
+  "authorization_endpoint": "https://thesignup.app/oauth/authorize",
+  "token_endpoint": "https://thesignup.app/oauth/token",
+  "registration_endpoint": "https://thesignup.app/oauth/register",
+  "response_types_supported": ["code"],
+  "grant_types_supported": [
+    "authorization_code",
+    "refresh_token",
+    "urn:ietf:params:oauth:grant-type:device_code"
+  ],
+  "code_challenge_methods_supported": ["S256"],
+  "scopes_supported": [
+    "signups:read", "signups:write",
+    "participants:read", "participants:write",
+    "register:write", "analytics:read",
+    "ai:draft", "reminders:send"
+  ],
+  "token_endpoint_auth_methods_supported": ["none", "client_secret_post"]
+}
+```
+
 ## Register an app
 
 Dynamic Client Registration (RFC 7591) is supported, so your app can self-register at runtime:
 
-```http
-POST /oauth/register
-Content-Type: application/json
+```sh
+curl -sS -X POST https://thesignup.app/oauth/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "client_name": "My agent",
+    "redirect_uris": ["https://my-agent.example/oauth/callback"],
+    "grant_types": ["authorization_code", "refresh_token"],
+    "token_endpoint_auth_method": "none",
+    "scope": "signups:read signups:write"
+  }' | jq
+```
 
+```json
 {
+  "client_id": "cli_01J7K5RXM2YD0FQ9X3GHCK4N8M",
   "client_name": "My agent",
   "redirect_uris": ["https://my-agent.example/oauth/callback"],
   "grant_types": ["authorization_code", "refresh_token"],
-  "token_endpoint_auth_method": "none",
-  "scope": "signups:read signups:write"
+  "scope": "signups:read signups:write",
+  "token_endpoint_auth_method": "none"
 }
 ```
 
-You'll get back a `client_id` and (for confidential clients) `client_secret`. Public clients use PKCE and skip the secret.
+Public clients use PKCE and skip the secret. Confidential clients (set `token_endpoint_auth_method: "client_secret_post"`) also receive a `client_secret`.
 
-## Authorization code flow with PKCE
+## Authorization code flow with PKCE — step by step
 
-1. **Build a code verifier + challenge.** Random 43–128-char string, SHA-256 it, base64url-encode the digest.
-2. **Redirect the user to the authorize URL:**
+### 1. Build a code verifier + challenge
 
-   ```
-   https://thesignup.app/oauth/authorize
-     ?response_type=code
-     &client_id=…
-     &redirect_uri=https://my-agent.example/oauth/callback
-     &scope=signups:read+participants:read
-     &code_challenge=<sha256-base64url>
-     &code_challenge_method=S256
-     &state=<random-csrf-token>
-     &resource=https://thesignup.app/api/v1
-   ```
+```ts
+import { randomBytes, createHash } from 'node:crypto';
 
-   The user sees a consent screen showing your `client_name`, the requested scopes, and the org they're acting as.
+const verifier = randomBytes(32).toString('base64url'); // 43+ chars
+const challenge = createHash('sha256').update(verifier).digest('base64url');
+```
 
-3. **Exchange the code for tokens** at the token endpoint:
+Store `verifier` somewhere keyed by `state` so you can pair it with the callback. Discard `verifier` after the token exchange.
 
-   ```http
-   POST /oauth/token
-   Content-Type: application/x-www-form-urlencoded
+### 2. Redirect the user to the authorize URL
 
-   grant_type=authorization_code
-   &code=<from callback>
-   &client_id=…
-   &redirect_uri=https://my-agent.example/oauth/callback
-   &code_verifier=<the original random string>
-   ```
+```
+GET https://thesignup.app/oauth/authorize
+  ?response_type=code
+  &client_id=cli_01J7K5RXM2YD0FQ9X3GHCK4N8M
+  &redirect_uri=https://my-agent.example/oauth/callback
+  &scope=signups:read+participants:read
+  &code_challenge=<base64url(sha256(verifier))>
+  &code_challenge_method=S256
+  &state=<random-csrf-token>
+  &resource=https://thesignup.app/api/v1
+```
 
-   Response:
+The user sees a consent screen showing:
 
-   ```json
-   {
-     "access_token": "oat_…",
-     "refresh_token": "ort_…",
-     "token_type": "Bearer",
-     "expires_in": 3600,
-     "scope": "signups:read participants:read"
-   }
-   ```
+- The `client_name` of the requesting agent
+- The list of requested scopes, each with a plain-English description
+- Which org they're authorizing the agent against (if they belong to more than one, they pick)
+- Two buttons: **Approve** and **Deny**
 
-4. **Use the access token** as a Bearer credential on REST or MCP requests.
+On **Approve**, the user is redirected to your `redirect_uri` with a one-time `code`:
 
-5. **Refresh** before expiry:
+```
+HTTP/2 302
+Location: https://my-agent.example/oauth/callback?code=ac_01J7K6N8DQHX5T2B1ME7VK9W3R&state=<csrf>
+```
 
-   ```http
-   POST /oauth/token
-   Content-Type: application/x-www-form-urlencoded
+On **Deny**, the same redirect happens but with `?error=access_denied`.
 
-   grant_type=refresh_token
-   &refresh_token=ort_…
-   &client_id=…
-   ```
+### 3. Exchange the code for tokens
 
-   Refresh tokens rotate on each use — store the new value and discard the old.
+```sh
+curl -sS -X POST https://thesignup.app/oauth/token \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "grant_type=authorization_code" \
+  -d "code=ac_01J7K6N8DQHX5T2B1ME7VK9W3R" \
+  -d "client_id=cli_01J7K5RXM2YD0FQ9X3GHCK4N8M" \
+  -d "redirect_uri=https://my-agent.example/oauth/callback" \
+  -d "code_verifier=$VERIFIER" | jq
+```
+
+```json
+{
+  "access_token": "oat_01J7K7P8DQHX5T2B1ME7VK9W3R",
+  "refresh_token": "ort_01J7K7P8DQHX5T2B1ME7VK9W3R",
+  "token_type": "Bearer",
+  "expires_in": 3600,
+  "scope": "signups:read participants:read"
+}
+```
+
+The `scope` in the response is what the user actually approved — may be a subset of what you requested.
+
+### 4. Use the access token
+
+```sh
+curl -sS -H "Authorization: Bearer oat_01J7K7P8DQHX5T2B1ME7VK9W3R" \
+  https://thesignup.app/api/v1/signups
+```
+
+### 5. Refresh before expiry
+
+```sh
+curl -sS -X POST https://thesignup.app/oauth/token \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "grant_type=refresh_token" \
+  -d "refresh_token=ort_01J7K7P8DQHX5T2B1ME7VK9W3R" \
+  -d "client_id=cli_01J7K5RXM2YD0FQ9X3GHCK4N8M" | jq
+```
+
+```json
+{
+  "access_token": "oat_01J7K8XYZ…",
+  "refresh_token": "ort_01J7K8XYZ…",
+  "token_type": "Bearer",
+  "expires_in": 3600,
+  "scope": "signups:read participants:read"
+}
+```
+
+**Refresh tokens rotate on each use** — store the new value and discard the old. Reusing an old refresh token is treated as a token-theft signal and revokes the whole grant.
 
 ## Audience binding (RFC 8707)
 
@@ -109,12 +215,61 @@ The `resource` parameter on the authorize request binds the access token to one 
 | REST API | `https://thesignup.app/api/v1` |
 | MCP server | `https://thesignup.app/mcp/mcp` |
 
-A token issued for the REST API won't be accepted at the MCP surface, and vice versa. This blocks a leaked credential from being replayed against a different surface.
+A token issued for the REST API won't be accepted at the MCP surface, and vice versa — the server rejects mismatched audiences before any handler runs. This blocks a leaked credential from being replayed against a different surface.
+
+If your app needs both surfaces, run two parallel authorizations (different `resource`, two access tokens).
 
 ## Scopes
 
 Same catalog as the [MCP quickstart](/docs/mcp/quickstart#scopes). Request the narrowest set that gets the job done — agents and users are both more comfortable approving `participants:read` than a blanket `participants:write`.
 
+## Error responses
+
+OAuth errors at the token endpoint follow [RFC 6749 §5.2](https://datatracker.ietf.org/doc/html/rfc6749#section-5.2):
+
+```json
+{
+  "error": "invalid_grant",
+  "error_description": "Authorization code has expired or already been used."
+}
+```
+
+Common codes:
+
+| `error` | When |
+|---|---|
+| `invalid_request` | Missing or malformed parameter |
+| `invalid_client` | Unknown `client_id` |
+| `invalid_grant` | Code expired, already used, or doesn't match the verifier |
+| `unauthorized_client` | Client isn't authorized for this grant type |
+| `unsupported_grant_type` | Unknown `grant_type` value |
+| `invalid_scope` | Requested scope isn't in the client's allowed list |
+
+REST and MCP responses (not the OAuth endpoints themselves) follow the [RFC 7807 problem format](/docs/api/errors).
+
 ## Device code flow (RFC 8628)
 
-For CLI and headless agents that can't open a browser, the device code flow is supported. The [CLI](/docs/cli) will use this once it ships.
+For CLI and headless agents that can't open a browser, the device code flow is supported. The agent prints a short user code; the user enters it on a confirmation URL in their own browser; the agent polls until the user approves.
+
+```sh
+# 1. Agent requests a code
+curl -sS -X POST https://thesignup.app/oauth/device_authorization \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "client_id=cli_…" \
+  -d "scope=signups:read"
+```
+
+```json
+{
+  "device_code": "dc_01J7K9…",
+  "user_code": "BRSK-9242",
+  "verification_uri": "https://thesignup.app/oauth/device",
+  "verification_uri_complete": "https://thesignup.app/oauth/device?user_code=BRSK-9242",
+  "expires_in": 600,
+  "interval": 5
+}
+```
+
+The agent displays `user_code` and `verification_uri` to the user, then polls the token endpoint every `interval` seconds with `grant_type=urn:ietf:params:oauth:grant-type:device_code`. Once the user approves, the polling call returns an access token.
+
+This is the auth mechanism the [CLI](/docs/cli) will use once it ships.

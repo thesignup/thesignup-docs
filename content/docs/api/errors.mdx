@@ -1,0 +1,205 @@
+---
+title: Error reference
+description: Every error code thesignup returns, with example shapes.
+---
+
+All errors are [`application/problem+json`](https://datatracker.ietf.org/doc/html/rfc7807). Switch on the `code` field — it's the stable contract. `title` and `detail` are for humans and may evolve without notice.
+
+## Anatomy
+
+```json
+{
+  "type": "https://thesignup.app/problems/not-found",
+  "title": "Not found",
+  "status": 404,
+  "code": "not_found",
+  "detail": "Signup sg_… doesn't exist."
+}
+```
+
+| Field | Stable? | What it's for |
+|---|---|---|
+| `type` | Yes | URI identifying the error class. Stable. |
+| `title` | No | Human-readable summary. |
+| `status` | Yes | HTTP status code, matches the response. |
+| `code` | **Yes — switch on this** | Machine-readable error class. Stable enum. |
+| `detail` | No | Free-form human message. |
+| `errors[]` | Yes (on `validation_failed`) | Field-level errors. |
+| `cause` | Yes (on `upgrade_required`) | Extension carrying upgrade target info. |
+
+## Auth (401)
+
+### `missing_credentials`
+
+No `Authorization` header.
+
+```json
+{
+  "type": "https://thesignup.app/problems/missing-credentials",
+  "title": "Authentication required",
+  "status": 401,
+  "code": "missing_credentials"
+}
+```
+
+### `malformed_credentials`
+
+`Authorization` header was present but couldn't be parsed (wrong scheme, missing space, etc.).
+
+### `invalid_credentials`
+
+Bearer token isn't recognized or has expired.
+
+### `revoked_credentials`
+
+Token used to be valid but was explicitly revoked. The agent should re-auth or prompt the user to re-link.
+
+## Authorization (403)
+
+### `scope_required`
+
+Token is valid but lacks the scope needed for this endpoint. Agents react by re-requesting authorization with the additional scope.
+
+```json
+{
+  "type": "https://thesignup.app/problems/scope-required",
+  "title": "Forbidden",
+  "status": 403,
+  "code": "scope_required",
+  "detail": "This endpoint requires the participants:write scope."
+}
+```
+
+### `forbidden`
+
+Token is valid, has the right scopes, but the operation is still disallowed (e.g. trying to modify a signup another org owns).
+
+## Tier gating (402)
+
+### `upgrade_required`
+
+The feature is gated to a higher billing tier. `cause` carries structured info on which tier is needed.
+
+```json
+{
+  "type": "https://thesignup.app/problems/upgrade-required",
+  "title": "Upgrade required",
+  "status": 402,
+  "code": "upgrade_required",
+  "detail": "AI drafts beyond the monthly quota require a Pro plan.",
+  "cause": {
+    "kind": "feature",
+    "featureLabel": "AI draft over quota",
+    "currentTier": "free",
+    "requiredTier": "pro"
+  }
+}
+```
+
+## Not found (404)
+
+### `not_found`
+
+Resource doesn't exist *or* isn't visible to the calling credential. We don't distinguish — leaks information.
+
+## Conflict (409)
+
+### `conflict`
+
+Generic conflict — usually a state-machine transition that's no longer valid (publishing a closed signup, for instance).
+
+### `idempotency_in_progress`
+
+Same `Idempotency-Key` is currently being processed on another request. Retry shortly.
+
+## Bad request (400)
+
+### `bad_request`
+
+Request was well-formed but the operation can't be completed in the current state — e.g. POSTing a participant to a signup that's accepting no more.
+
+## Validation (422)
+
+### `validation_failed`
+
+Request body, query, or path failed Zod validation. Errors itemized in `errors[]`.
+
+```json
+{
+  "type": "https://thesignup.app/problems/validation-failed",
+  "title": "Validation failed",
+  "status": 422,
+  "code": "validation_failed",
+  "errors": [
+    { "path": "title", "message": "String must contain at least 1 character(s)" },
+    { "path": "eventDate", "message": "Required" },
+    { "path": "selections.0.id", "message": "Invalid uuid" }
+  ]
+}
+```
+
+`path` is dot-delimited; for arrays it's `<field>.<index>.<sub-field>`.
+
+### `idempotency_key_reuse`
+
+Same `Idempotency-Key` was used with a *different* body in the last 24h. Send a new key, or replay the exact original body.
+
+## Rate limiting (429)
+
+### `rate_limited`
+
+Per-credential per-minute budget exhausted. Honor the `Retry-After` header.
+
+```http
+HTTP/2 429
+Retry-After: 17
+Content-Type: application/problem+json
+
+{
+  "type": "https://thesignup.app/problems/rate-limited",
+  "title": "Rate limited",
+  "status": 429,
+  "code": "rate_limited"
+}
+```
+
+### `daily_ceiling_exceeded`
+
+A per-org daily cap was hit (e.g. `POST /signups` is capped at 50/day/org across all credentials, regardless of tier). Retry tomorrow.
+
+## Server-side (5xx)
+
+### `internal_error`
+
+Unexpected server-side failure. Safe to retry with the same idempotency key.
+
+### `upstream_unavailable`
+
+A third-party dependency (AI provider, SMS gateway) failed. Retry with backoff.
+
+## Switching on errors in code
+
+```ts
+async function fetchSignup(id: string) {
+  const res = await fetch(`https://thesignup.app/api/v1/signups/${id}`, {
+    headers: { Authorization: `Bearer ${process.env.SIGNUP_API_KEY}` },
+  });
+
+  if (res.ok) return res.json();
+
+  const problem = await res.json();
+  switch (problem.code) {
+    case 'not_found':
+      return null;
+    case 'rate_limited':
+      // Honor Retry-After
+      await sleep(Number(res.headers.get('Retry-After') ?? 5) * 1000);
+      return fetchSignup(id);
+    case 'invalid_credentials':
+    case 'revoked_credentials':
+      throw new ReauthRequiredError(problem);
+    default:
+      throw new TheSignupError(problem);
+  }
+}
+```
